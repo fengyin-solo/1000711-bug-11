@@ -13,6 +13,8 @@ class PageResult(BaseModel, Generic[T]):
     total: int
     page: int = 1
     size: int = 20
+    # 合计卡片：与 items、total 同一次查询算出，缺省时前端不展示合计
+    stats: dict[str, Any] | None = None
 
 
 class ActionResult(BaseModel):
@@ -28,18 +30,6 @@ class EntryPayload(BaseModel):
     remark: str | None = None
 
 
-
-class RoadEntry(BaseModel):
-    """道路设施明细结构。"""
-
-    field_0: str | None = None  # 设施编码
-    field_1: str | None = None  # 道路名称
-    field_2: str | None = None  # 道路等级
-    field_3: str | None = None  # 起止桩号
-    field_4: str | None = None  # 路面结构
-    field_5: str | None = None  # 管养单位
-    field_6: str | None = None  # 建成年份
-    field_7: str | None = None  # 设施状态
 
 class BridgeEntry(BaseModel):
     """桥梁设施明细结构。"""

@@ -12,16 +12,21 @@
     </header>
 
     <div class="stat-row">
-      <article v-for="item in stats" :key="item.label" class="stat-card">
-        <span class="stat-label">{{ item.label }}</span>
-        <strong class="stat-value">{{ item.value }}</strong>
+      <article v-for="key in statKeys" :key="key" class="stat-card">
+        <span class="stat-label">{{ key }}</span>
+        <strong class="stat-value">
+          {{ roadStore.stats[key] ?? 0 }}<small v-if="statUnits[key]">{{ statUnits[key] }}</small>
+        </strong>
       </article>
     </div>
 
     <form class="filter-bar" @submit.prevent="reload">
-      <label v-for="field in filterFields" :key="field" class="filter-item">
-        <span>{{ field }}</span>
-        <input v-model="filters[field]" :placeholder="`按${field}检索`" />
+      <label v-for="field in filterFields" :key="field.key" class="filter-item">
+        <span>{{ field.key }}</span>
+        <input
+          v-model="roadStore.filters[field.key]"
+          :placeholder="field.placeholder ?? `按${field.key}检索`"
+        />
       </label>
       <button class="btn" type="submit">查询</button>
       <button class="btn ghost" type="button" @click="resetFilters">重置条件</button>
@@ -35,8 +40,17 @@
         </tr>
       </thead>
       <tbody>
-        <tr v-for="row in rows" :key="String(row.id)">
-          <td v-for="column in columns" :key="column">{{ row[column] ?? '—' }}</td>
+        <tr v-for="row in roadStore.rows" :key="String(row.id)">
+          <td v-for="column in columns" :key="column">
+            <RouterLink
+              v-if="column === codeColumn"
+              class="link"
+              :to="`/road/${row.id}`"
+            >
+              {{ displayText(row[column]) }}
+            </RouterLink>
+            <template v-else>{{ displayText(row[column]) }}</template>
+          </td>
           <td class="row-actions">
             <button
               v-for="action in actions"
@@ -49,14 +63,14 @@
             </button>
           </td>
         </tr>
-        <tr v-if="!rows.length">
+        <tr v-if="!roadStore.rows.length">
           <td :colspan="columns.length + 1" class="empty-state">暂无道路设施数据，可先登记道路设施</td>
         </tr>
       </tbody>
     </table>
 
     <footer class="page-foot">
-      <span>共 {{ total }} 条道路设施记录</span>
+      <span>共 {{ roadStore.total }} 条道路设施记录</span>
       <span v-if="errorMessage" class="error-text">{{ errorMessage }}</span>
     </footer>
   </section>
@@ -65,25 +79,50 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 
-import { request } from '@/api/client'
-
-type Row = Record<string, string | number | null>
+import { STAT_KEYS, STAT_UNITS, useRoadStore, type RoadRow } from '@/stores/road'
 
 const ENDPOINT = '/api/road'
 const columns = ["设施编码", "道路名称", "道路等级", "起止桩号", "路面结构", "管养单位", "建成年份", "设施状态"]
+const codeColumn = '设施编码'
+// 可筛字段沿用前三个既有检索框，并补上路面结构，便于把缺路面结构的记录用“空”筛出来
+const filterFields: Array<{ key: string; placeholder?: string }> = [
+  { key: '设施编码' },
+  { key: '道路名称' },
+  { key: '道路等级', placeholder: '按道路等级检索，填“空”筛未填写' },
+  { key: '路面结构', placeholder: '按路面结构检索，填“空”筛缺失记录' },
+]
 const actions = ["办理移交", "标记观测", "封闭设施"]
-const statuses = ["待移交", "正常养护", "重点观测", "封闭施工"]
-const stats = [{"label": "在养道路", "value": 0}, {"label": "重点观测道路", "value": 0}, {"label": "管养里程", "value": 0}]
+const statKeys = STAT_KEYS
+const statUnits = STAT_UNITS
 
-const rows = ref<Row[]>([])
-const total = ref(0)
+const roadStore = useRoadStore()
 const errorMessage = ref('')
-const filters = ref<Record<string, string>>({})
-const filterFields = columns.slice(0, 3)
 
-function resetFilters() {
-  filters.value = {}
-  void reload()
+function displayText(value: unknown): string {
+  // null、undefined 或纯空白统一显示占位线，缺字段记录因此仍占一行而不是消失
+  if (value === null || value === undefined || String(value).trim() === '') {
+    return '—'
+  }
+  return String(value)
+}
+
+async function reload() {
+  errorMessage.value = ''
+  try {
+    await roadStore.loadList()
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '道路设施列表读取失败'
+  }
+}
+
+async function resetFilters() {
+  errorMessage.value = ''
+  try {
+    // 清空条件后无条件拉全量，缺路面结构的记录同样返回
+    await roadStore.resetFilters()
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '道路设施列表读取失败'
+  }
 }
 
 function exportRows() {
@@ -94,35 +133,14 @@ function openCreate() {
   errorMessage.value = '道路设施登记入口尚未接入审批流'
 }
 
-async function runAction(action: string, row: Row) {
+async function runAction(action: string, row: RoadRow) {
   errorMessage.value = ''
   try {
-    const response = await request(`${ENDPOINT}/${row.id}/actions`, {
-      method: 'POST',
-      body: JSON.stringify({ action }),
-    })
-    if (!response.ok) {
-      throw new Error('道路设施动作未生效，请稍后重试')
-    }
+    await roadStore.applyAction(Number(row.id), action)
+    // 动作生效后用同一份后端数据刷新列表与合计，旧状态不会残留
     await reload()
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '道路设施操作失败'
-  }
-}
-
-async function reload() {
-  errorMessage.value = ''
-  const query = new URLSearchParams(filters.value as Record<string, string>).toString()
-  try {
-    const response = await request(`${ENDPOINT}?${query}`)
-    if (!response.ok) {
-      throw new Error('道路设施列表读取失败')
-    }
-    const payload = await response.json()
-    rows.value = payload.items ?? []
-    total.value = payload.total ?? rows.value.length
-  } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : '道路设施列表读取失败'
   }
 }
 
